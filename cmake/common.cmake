@@ -9,6 +9,6 @@ endmacro()
 
 macro(oitk_set_module_vars MNAME)
     oitk_set_module_names(${MNAME})
-    file(GLOB ${MODULE_SRC_NAME} *.cxx)
+    file(GLOB ${MODULE_SRC_NAME} *.cxx *.hxx)
     file(GLOB ${MODULE_HDR_NAME} ../../include/${MNAME}/*.h)
 endmacro()
