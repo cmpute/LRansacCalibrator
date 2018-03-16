@@ -8,7 +8,7 @@ include(${OITK_SOURCE_DIR}/cmake/common.cmake)
 # Find dependencies
 find_package(Eigen REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(PCL COMPONENTS common io sample_consensus REQUIRED)
+find_package(PCL COMPONENTS common io sample_consensus search features segmentation REQUIRED)
 # Use SYSTEM to enable <xxx> include style
 include_directories(SYSTEM ${EIGEN_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 
@@ -19,5 +19,5 @@ add_subdirectory(source/calibration)
 
 # Add command line interface
 add_executable(oitk entry.cxx)
-target_link_libraries(oitk PRIVATE oitk_calibration)
 add_dependencies(oitk oitk_calibration)
+target_link_libraries(oitk ${OpenCV_LIBRARIES} ${PCL_LIBRARIES})
