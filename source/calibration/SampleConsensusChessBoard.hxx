@@ -10,9 +10,9 @@ namespace oitk
     inline void compressChessboardModel(Eigen::VectorXf &model,
         const Eigen::Vector3f &plane, const Eigen::Vector3f &origin, const Eigen::Vector3f &xdirection)
     {
-        model[0] = origin[0];
-        model[1] = origin[1];
-        model[2] = origin[2];
+        model.resize(6);
+        model.head(3) = origin;
+        // model.data()[3] = plane.data()[0] / plane.data()[2];
         model[3] = plane[0] / plane[2];
         model[4] = plane[1] / plane[2];
 
@@ -28,11 +28,9 @@ namespace oitk
     inline void decompressChessboardModel(const Eigen::VectorXf &model,
         Eigen::Vector3f &plane, Eigen::Vector3f &origin, Eigen::Vector3f &xdirection)
     {
-        origin[0] = model[0];
-        origin[1] = model[1];
-        origin[2] = model[2];
+        origin = model.head(3);
         plane[0] = model[3];
-        plane[1] = model[2];
+        plane[1] = model[4];
         plane[2] = 1;
         plane /= plane.norm();
 
@@ -41,6 +39,7 @@ namespace oitk
         Eigen::Vector3f globalxdir = plane.cross(absolute);
         Eigen::Vector3f globalydir = plane.cross(globalxdir);
         xdirection = globalxdir * cos(model[5]) + globalydir * sin(model[5]);
+        xdirection /= xdirection.norm();
     }
 
     template <typename PointT>
@@ -63,12 +62,12 @@ namespace oitk
                 return false;
 
             // Get the values at the two points
-            Array3fMapConst p0 = input_->points[samples[0]].getArray3fMap();
-            Array3fMapConst p1 = input_->points[samples[1]].getArray3fMap();
-            Eigen::Array3f segment = (p1 - p0);
+            Vector3fMapConst p0 = input_->points[samples[0]].getVector3fMap();
+            Vector3fMapConst p1 = input_->points[samples[1]].getVector3fMap();
+            Eigen::Vector3f segment = (p1 - p0);
 
             constexpr float sq2 = 1.5; // a bit larger than sqrt(2)
-            if (segment.lpNorm<2>() > _board_size * sq2)
+            if (segment.norm() > _board_size * sq2)
                 return false;
 
             return true;
@@ -83,7 +82,8 @@ namespace oitk
         inline float distanceToHoleEdge(const float &relative_coord)
         {
             // XXX: Assert relative_coord is positive
-            float times = relative_coord / (_hole_size * 2) + (_pattern_size % 2 == 0 ? 0.25 : -0.25);
+            float times = relative_coord / (_hole_size * 2)
+                + ((_pattern_size / 2 + 1) % 2 == 0 ? 0.25 : -0.25);
             times = times - (int)times;
             if (times < 0.25)
                 return times * _hole_size * 2;
@@ -96,15 +96,17 @@ namespace oitk
         {
             // XXX: Assert board_x and board_y is positive
             float outer_edge = _board_size / 2;
-            if (board_x > outer_edge)
+            float dx = board_x - outer_edge;
+            float dy = board_y - outer_edge;
+            if (dx > 0)
             {
-                if (board_y > outer_edge)
-                    return sqrt(board_x*board_x + board_y * board_y);
+                if (dy > 0)
+                    return sqrt(dx * dx + dy * dy);
                 else
-                    return board_x;
+                    return dx;
             }
             else if (board_y > outer_edge)
-                return board_y;
+                return dy;
             else
                 return min(distanceToHoleEdge(board_x),
                            distanceToHoleEdge(board_y));
@@ -116,13 +118,28 @@ namespace oitk
         using SampleConsensusModel<PointT>::indices_;
         using SampleConsensusModel<PointT>::error_sqr_dists_;
 
+    private:
+        /** \brief Functor for the optimization function */
+        struct OptimizationFunctor : pcl::Functor<float>
+        {
+            OptimizationFunctor(int n_data_points, SampleConsensusChessboard<PointT> *model) :
+                pcl::Functor<float>(n_data_points), model_(model) {}
+
+            int operator() (const Eigen::VectorXf &x, Eigen::VectorXf &fvec) const
+            {
+                // TODO: Implement
+            }
+
+            SampleConsensusChessboard<PointT> *model_;
+        };
+
     public:
         SampleConsensusChessboard(const PointCloudConstPtr &cloud,
             int pattern_size, float board_size, float edge_size,
             Eigen::VectorXf plane_coeffs, bool random = false)
             : SampleConsensusModel<PointT>(cloud, random),
             _pattern_size(pattern_size), _board_size(board_size), _edge_size(edge_size),
-            _hole_size(2 * (_board_size - _edge_size) / _pattern_size), _rand_rate(1)
+            _hole_size((board_size - 2 * edge_size) / (pattern_size - 1)), _rand_rate(1)
         {
             model_name_ = "SampleConsensusChessboard";
             sample_size_ = 2;
@@ -140,7 +157,7 @@ namespace oitk
             Eigen::VectorXf plane_coeffs, bool random = false)
             : SampleConsensusModel<PointT>(cloud, indices, random),
             _pattern_size(pattern_size), _board_size(board_size), _edge_size(edge_size),
-            _hole_size(2 * (_board_size - _edge_size) / _pattern_size), _rand_rate(1)
+            _hole_size((board_size - 2 * edge_size) / (pattern_size - 1)), _rand_rate(1)
         {
             model_name_ = "SampleConsensusChessboard";
             sample_size_ = 2;
@@ -160,7 +177,7 @@ namespace oitk
             pcl::Array3fMapConst p1 = input_->points[samples[1]].getArray3fMap();
 
             Eigen::Array3f origin = (p0 + p1) / 2;
-            origin += (p0 - origin) * rndHalf();
+            origin += (p0 - origin) * rndHalf() * _rand_rate;
             Eigen::Vector3f diameter = p1 - p0;
             Eigen::Vector3f adiameter = _plane_coefficients.cross(diameter);
 
@@ -201,7 +218,8 @@ namespace oitk
 
                 // Calculate distance
                 float bdist = distanceToBoard(board_x, board_y);
-                distances[idx] = sqrt(bdist * bdist + zdist * zdist);
+                // distances[idx] = sqrt(bdist * bdist + zdist * zdist);
+                distances[idx] = bdist; // Just consider the distance in board
             }
         }
 
@@ -213,6 +231,7 @@ namespace oitk
 
             int counter = 0;
             inliers.resize(indices_->size());
+            error_sqr_dists_.resize(indices_->size());
             for (int idx = 0;idx < distances.size(); idx++)
             {
                 if (distances[idx] >= threshold) continue;
