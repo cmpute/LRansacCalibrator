@@ -5,15 +5,16 @@
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/highgui.hpp>
 #include <pcl/common/angles.h>
 #include <pcl/features/normal_3d_omp.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/sample_consensus/ransac.h>
 #include <pcl/sample_consensus/sac_model_plane.h>
 #include <pcl/segmentation/region_growing.h>
-#include <pcl/visualization/pcl_visualizer.h>
 #include <unsupported/Eigen/NonLinearOptimization>
+
+#include <opencv2/highgui.hpp>
+#include <pcl/visualization/pcl_visualizer.h>
 
 #include "calibration/LidarImageCalibrator.h"
 #include "calibration/SampleConsensusChessBoard.hxx"
@@ -58,7 +59,7 @@ namespace oitk
         return _pcount_coeff / (board_distance * board_distance);
     }
 
-    bool LidarImageCalibrator::findChessboardCorners(
+    bool LidarImageCalibrator::findPointCloudCorners(
         ConstPointCloudPtr cloud, Eigen::MatrixX3f& corners, VisualizeType visualize)
     {
         // Find planes in point cloud
@@ -140,12 +141,12 @@ namespace oitk
             vector<int> plane_inliers;
             Eigen::VectorXf plane_params;
             SampleConsensusModelPlane<PointType>::Ptr plane_model(
-                new SampleConsensusModelPlane<PointType>(cloud, cluster_vec)); // XXX: random?
+                new SampleConsensusModelPlane<PointType>(cloud, cluster_vec)); // XXX: pass parameter "random" ?
             RandomSampleConsensus<PointType> plane_sac(plane_model);
             plane_sac.setDistanceThreshold(_plane_dist_thres);
 
             if (!plane_sac.computeModel())
-                cerr << "Failed to find the board plane in cluster!" << endl;
+                cerr << "Failed to find the board plane in cluster!" << endl; // TODO: add assert, debug, error macros
             plane_sac.getInliers(plane_inliers);
             plane_sac.getModelCoefficients(plane_params);
             plane_sac.setProbability(1 - 1e-8);
@@ -188,11 +189,11 @@ namespace oitk
             vector<int> board_inliers;
             SampleConsensusChessboard<PointType>::Ptr board_model(
                 new SampleConsensusChessboard<PointType>(cloud, plane_inliers,
-                    _pattern_size ,_board_size, _edge_size, plane_params)); // XXX: random?
+                    _pattern_size ,_board_size, _edge_size, plane_params)); // XXX: pass parameter "random" ?
             RandomSampleConsensus<PointType>::Ptr board_sac(
                 new RandomSampleConsensus<PointType>(board_model));
             board_sac->setDistanceThreshold(_board_dist_thres);
-            board_sac->setProbability(1 - 1e-16);
+            board_sac->setProbability(1 - 1e-16); // Increase trying times
 
             if (!board_sac->computeModel())
                 cerr << "Failed to find the board in cluster!" << endl;
@@ -287,7 +288,34 @@ namespace oitk
         int counter = 0;
         for (float offset_x : offsets)
             for (float offset_y : offsets)
-                corners.row(counter++) = offset_x * xdirection + offset_y * ydirection;
+                corners.row(counter++) = origin + offset_x * xdirection + offset_y * ydirection;
+
+        return true;
+    }
+
+    bool LidarImageCalibrator::findImageCorners(
+        ConstImagePtr image, Eigen::MatrixX2f& corners, VisualizeType visualize)
+    {
+        Mat binImage;
+        vector<Point2f> image_corners;
+#ifdef USE_INNER_GRIDS
+        Size pattern(_pattern_size - 2, _pattern_size - 2);
+#else
+        Size pattern(_pattern_size, _pattern_size);
+#endif
+        threshold(*image, binImage, _bin_thres, 255, THRESH_BINARY);
+        if (!cv::findChessboardCorners(binImage, pattern, image_corners, CALIB_CB_FAST_CHECK))
+        {
+            cerr << "Failed to find the chessboard in image" << endl;
+            return false;
+        }
+
+        for (int i = 0; i < image_corners.size(); i++)
+        {
+            corners(i, 0) = image_corners[i].x;
+            corners(i, 1) = image_corners[i].y;
+        }
+        return true;
     }
 
     inline void LidarImageCalibrator::sortCorners(
@@ -304,10 +332,16 @@ namespace oitk
         while (!left_filter.empty())
         {
             Eigen::MatrixX2f::Index leftist_idx = *(left_filter.begin());
+            bool found_leftist = false;
             for (auto row : left_filter)
             {
                 if (edge_counter > 0 && corners(row, 1) <= bottom_bound) // Mask
                     continue;
+                if (!found_leftist)
+                {
+                    leftist_idx = row;
+                    found_leftist = true;
+                }
                 if (corners(row, 0) < corners(leftist_idx, 0)) // Find leftist
                     leftist_idx = row;
             }
@@ -323,20 +357,20 @@ namespace oitk
         }
     }
 
-    /** \brief Functor for the projection optimization function */
-    struct LidarImageCalibrator::OptimizationFunctor : pcl::Functor<float>
+    /** \brief Functor for the homography matrix initial optimization function */
+    struct LidarImageCalibrator::InitialOptimizationFunctor : pcl::Functor<float>
     {
-        OptimizationFunctor(const Eigen::MatrixX2f& image_points, const Eigen::MatrixX3f& lidar_points)
+        InitialOptimizationFunctor(const Eigen::MatrixX2f& image_points, const Eigen::MatrixX3f& lidar_points)
             : pcl::Functor<float>(image_points.rows()),
             _image_points(image_points), _lidar_points(lidar_points) {}
 
-        Eigen::MatrixX2f _image_points;
-        Eigen::MatrixX3f _lidar_points;
+        const Eigen::MatrixX2f& _image_points;
+        const Eigen::MatrixX3f& _lidar_points;
 
         int operator() (const Eigen::VectorXf &x, Eigen::VectorXf &fvec) const
         {
             // Reshape
-            Eigen::Matrix<float, 3, 4, Eigen::RowMajor> HH =
+            Eigen::Matrix<float, 3, 4> HH =
                 Eigen::Matrix<float, 3, 4, Eigen::RowMajor>::Map(x.data());
 
             // Project
@@ -356,7 +390,117 @@ namespace oitk
         }
     };
 
-    Eigen::Matrix<float, 3, 4> LidarImageCalibrator::calibrate(const std::vector<ConstImagePtr> images,
+    /** \brief Functor for the homography matrix finetune optimization function 
+      *        If H is provided, then the H part of input parameters is fixed.
+      */
+    struct LidarImageCalibrator::FinetuneOptimizationFunctor : pcl::Functor<float>
+    {
+        FinetuneOptimizationFunctor(const Eigen::MatrixX2f& image_points, const Eigen::MatrixX3f& lidar_points,
+            int image_rows, int image_columns, const Eigen::VectorXf& proportion,
+            const Eigen::Matrix<float, 3, 4>& H)
+            : pcl::Functor<float>(image_points.rows()),
+            _image_points(image_points), _lidar_points(lidar_points),
+            _image_rows(image_rows), _image_columns(image_columns),
+            _proportion(proportion), _HH(H), _fixed_H(true) {}
+
+        FinetuneOptimizationFunctor(const Eigen::MatrixX2f& image_points, const Eigen::MatrixX3f& lidar_points,
+            int image_rows, int image_columns, const Eigen::VectorXf& proportion)
+            : pcl::Functor<float>(image_points.rows()),
+            _image_points(image_points), _lidar_points(lidar_points),
+            _image_rows(image_rows), _image_columns(image_columns),
+            _proportion(proportion), _HH(), _fixed_H(false) {}
+
+        const Eigen::MatrixX2f& _image_points;
+        const Eigen::MatrixX3f& _lidar_points;
+        const int _image_rows, _image_columns;
+        const Eigen::VectorXf& _proportion;
+        const Eigen::Matrix<float, 3, 4> _HH;
+        const bool _fixed_H;
+
+        int operator() (const Eigen::VectorXf &x, Eigen::VectorXf &fvec) const
+        {
+            Eigen::VectorXf P = x.cwiseProduct(_proportion);
+
+            // Reshape and initialize
+            Eigen::Matrix<float, 3, 4> HH;
+            float u0, v0, k1, k2, p1, p2;
+            if (_fixed_H)
+            {
+                HH = _HH;
+                u0 = P[12]; v0 = P[13];
+                k1 = P[14]; k2 = P[15];
+                p1 = P[16]; p2 = P[17];
+            }
+            else
+            {
+                HH = Eigen::Matrix<float, 3, 4, Eigen::RowMajor>::Map(x.head(12).data());
+                u0 = P[0]; v0 = P[1];
+                k1 = P[2]; k2 = P[3];
+                p1 = P[4]; p2 = P[5];
+            }
+
+            // Project
+            Eigen::Matrix4Xf homo_points(4, _lidar_points.rows());
+            homo_points.topRows(3) = _lidar_points.transpose();
+            homo_points.bottomRows(1).setOnes();
+
+            Eigen::Matrix3Xf projected_points = HH * homo_points;
+            projected_points.row(0) = projected_points.row(0).cwiseQuotient(projected_points.row(2));
+            projected_points.row(1) = projected_points.row(1).cwiseQuotient(projected_points.row(2));
+
+            // Transform into camera coordinate
+            auto ux = projected_points.row(0).array() - u0;
+            auto uy = projected_points.row(1).array() - v0;
+            auto r2 = ux.square() + uy.square();
+            /*auto nux = ux*(1+k1*r2+k2*r2.square(), )*/
+
+            // Compute errors
+            Eigen::Matrix2Xf err = (_image_points.transpose() - projected_points.topRows(2));
+            fvec = err.colwise().norm();
+
+            return 0;
+        }
+    };
+
+    Eigen::Matrix<float, 3, 4>& LidarImageCalibrator::solveHomographyMatrix(
+        Eigen::MatrixX2f& image_corners, Eigen::MatrixX3f& cloud_corners)
+    {
+        // Construct non-homogeneous linear equation group
+        int num_sample = cloud_corners.rows(); // TODO: assert image_corners.rows() == cloud_corners.rows()
+        Eigen::MatrixXf A = Eigen::MatrixXf::Zero(3 * num_sample, 12 + num_sample);
+        for (int i = 0, j = 0; i < num_sample; i++, j += 3)
+        {
+            A.block<1, 3>(j, 0) = cloud_corners.row(i);
+            A.block<1, 3>(j + 1, 4) = cloud_corners.row(i);
+            A.block<1, 3>(j + 2, 8) = cloud_corners.row(i);
+            A(j, 3) = A(j, 7) = A(j, 11) = 1;
+
+            A.block<2, 1>(j, 12 + i) = -image_corners.row(i);
+            A(j + 2, 12 + i) = -1;
+        }
+
+        // Solve equations Ax = 0
+        auto b = -A.rightCols(1);
+        auto acut = A.cols() - 1;
+        // https://stackoverflow.com/a/13924079
+        Eigen::VectorXf Hc = A.leftCols(acut).jacobiSvd(
+            Eigen::ComputeThinU | Eigen::ComputeThinV).solve(b);
+        Eigen::VectorXf H = Hc.head(12);
+
+        // Optimize projection matrix
+        InitialOptimizationFunctor functor(image_corners, cloud_corners);
+        Eigen::NumericalDiff<InitialOptimizationFunctor> num_diff(functor);
+        Eigen::LevenbergMarquardt<Eigen::NumericalDiff<InitialOptimizationFunctor>, float> lm(num_diff);
+        lm.parameters.maxfev = 40000;
+        Eigen::LevenbergMarquardtSpace::Status status = lm.minimize(H); // https://stackoverflow.com/a/18536310
+
+        // Reshape
+        Eigen::Matrix<float, 3, 4> HH =
+            Eigen::Matrix<float, 3, 4, Eigen::RowMajor>::Map(H.data());
+        return HH;
+    }
+
+    Eigen::Matrix<float, 3, 4>& LidarImageCalibrator::calibrate(const std::vector<ConstImagePtr> images,
         const std::vector<ConstPointCloudPtr> clouds, VisualizeType visualize)
     {
         if (images.size() != clouds.size())
@@ -370,102 +514,91 @@ namespace oitk
 
         Eigen::MatrixX2f all_image_corners(frame_count * corners_per_frame, 2);
         Eigen::MatrixX3f all_cloud_corners(frame_count * corners_per_frame, 3);
+        #pragma omp parallel for
         for (int frame = 0; frame < frame_count; frame++)
         {
             // Find chessboard in image
-            Mat binImage;
-            vector<Point2f> image_corners;
-#ifdef USE_INNER_GRIDS
-            Size pattern(_pattern_size - 2, _pattern_size - 2);
-#else
-            Size pattern(_pattern_size, _pattern_size);
-#endif
-            threshold(*(images[frame]), binImage, _bin_thres, 255, THRESH_BINARY);
-            if (!cv::findChessboardCorners(binImage, pattern, image_corners, CALIB_CB_FAST_CHECK))
-                cerr << "Failed to find the chessboard in image" << endl;
-
-            // Visualize chessboard corners in image
-            if ((visualize & VisualizeType::ImageCorners) == VisualizeType::ImageCorners)
-            {
-                Mat colored,  resized; 
-                cvtColor(binImage, colored, cv::COLOR_GRAY2BGR);
-                drawChessboardCorners(colored, pattern, image_corners, true);
-                resize(colored, resized, Size(400 * colored.cols / colored.rows, 400));
-                namedWindow("Chessboard corners in image");
-                imshow("Chessboard corners in image", resized);
-                waitKey(5000); destroyWindow("Chessboard corners in image");
-            }
+            Eigen::MatrixX2f image_corners(corners_per_frame, 2);
+            findImageCorners(images[frame], image_corners, visualize);
 
             // Sort corners in image
-            Eigen::MatrixX2f image_corners_matrix(image_corners.size(), 2);
             vector<int> image_corners_indices;
-            for (int i = 0; i < image_corners.size(); i++)
-            {
-                image_corners_matrix(i, 0) = image_corners[i].x;
-                image_corners_matrix(i, 1) = image_corners[i].y;
-            }
-            sortCorners(image_corners_matrix, image_corners_indices);
+            Eigen::MatrixX2f image_corners_vreverse = image_corners;
+            image_corners_vreverse.rightCols(1).array() *= -1;
+            sortCorners(image_corners_vreverse, image_corners_indices);
 
             // Add image corners
             for (int i = 0; i < corners_per_frame; i++)
+                all_image_corners.row(frame*corners_per_frame + i) =
+                    image_corners.row(image_corners_indices[i]);
+
+            // Visualize image corners
+            if ((visualize & VisualizeType::ImageCorners) == VisualizeType::ImageCorners)
             {
-                all_image_corners(frame*corners_per_frame + i, 0) = image_corners[i].x;
-                all_image_corners(frame*corners_per_frame + i, 1) = image_corners[i].y;
+                Mat painted = *images[frame], resized;
+                int counter = 1;
+                for (auto corner_tag : image_corners_indices)
+                {
+                    cv::Point corner_center(image_corners(corner_tag, 0), image_corners(corner_tag, 1));
+                    cv::Scalar pcolor(255, 255, 0), tcolor(0, 255, 0);
+                    cv::circle(painted, corner_center, 30, pcolor, 5);
+                    cv::putText(painted, to_string(counter++), corner_center,
+                        cv::FONT_HERSHEY_SCRIPT_SIMPLEX, 2, tcolor, 5);
+                }
+
+                resize(painted, resized, Size(400 * painted.cols / painted.rows, 400));
+                namedWindow("Chessboard corners in image");
+                imshow("Chessboard corners in image", resized);
+                waitKey(0); destroyWindow("Chessboard corners in image");
             }
 
             // Find Chessboard in point cloud
             Eigen::MatrixX3f cloud_corners(corners_per_frame, 3);
-            if (!findChessboardCorners(clouds[frame], cloud_corners, visualize))
+            if (!findPointCloudCorners(clouds[frame], cloud_corners, visualize))
                 cerr << "Failed to find the chessboard in point cloud" << endl;
 
             // Sort corners in point cloud
             vector<int> cloud_corners_indices;
-            // XXX: consider yoz as camera plane, set this as an argument?
+            // XXX: assume yoz is the camera plane, set this as an argument?
             sortCorners(cloud_corners.rightCols(2), cloud_corners_indices);
 
             // Add cloud corners
             for (int i = 0; i < corners_per_frame; i++)
                 all_cloud_corners.row(frame*corners_per_frame + i) =
                     cloud_corners.row(cloud_corners_indices[i]);
+
+            // Visualize cloud corners
+            if ((visualize & VisualizeType::PointCloudCorners) == VisualizeType::PointCloudCorners)
+            {
+                visualization::PCLVisualizer::Ptr corners_viewer(new visualization::PCLVisualizer("corners"));
+                corners_viewer->addPointCloud<PointXYZ>(clouds[frame], "cluster");
+
+                int counter = 1;
+                for (auto corner_tag : cloud_corners_indices)
+                {
+                    PointType pcentroid;
+                    pcentroid.getVector3fMap() = cloud_corners.row(corner_tag);
+                    corners_viewer->addSphere(pcentroid, 0.02, 255, 255, 0, "cp" + to_string(corner_tag));
+                    corners_viewer->addText3D("c" + to_string(counter++)
+                        + "(" + to_string(cloud_corners(corner_tag, 1)) + "," + to_string(cloud_corners(corner_tag, 2)) + ")"
+                        , pcentroid, 0.02, 0, 255, 0);
+                }
+
+                corners_viewer->addCoordinateSystem();
+                corners_viewer->initCameraParameters();
+                corners_viewer->spin();
+            }
         }
 
-        // Construct non-homogeneous linear equation group
-        int total_frame_count = frame_count * corners_per_frame;
-        Eigen::MatrixXf A(3 * total_frame_count, 12 + total_frame_count);
-        A.setZero();
-        for (int i = 0, j = 0; i < total_frame_count; i++, j += 3)
-        {
-            A.block<1, 3>(i * 3, 0) = all_cloud_corners.row(i);
-            A.block<1, 3>(i * 3 + 1, 4) = all_cloud_corners.row(i);
-            A.block<1, 3>(i * 3 + 2, 8) = all_cloud_corners.row(i);
-            A(i * 3, 3) = A(i * 3, 7) = A(i * 3, 11) = 1;
+        auto initial_H = solveHomographyMatrix(all_image_corners, all_cloud_corners);
 
-            A.block<2, 1>(i * 3, 12 + i) = all_image_corners.row(i);
-            A(i * 3 + 2, 12 + i) = 1;
-        }
+        Eigen::Matrix<float, 6, 1> initial_P = Eigen::Matrix<float, 6, 1>::Zero();
+        // XXX: Add image size as parameter or use assert to check every image ?
+        initial_P[0] = images[0]->cols;
+        initial_P[1] = images[0]->rows;
+        Eigen::Matrix<float, 6, 1> proportion = Eigen::Matrix<float, 6, 1>::Ones();
 
-        auto b = -A.rightCols(1);
-        A.rightCols(1).setZero();
-        auto acut = A.cols() - 1;
-
-        // Solve equations with least squares
-        auto svd = A.leftCols(acut).jacobiSvd();
-        auto U = svd.matrixU(); auto V = svd.matrixV();
-        auto S = svd.singularValues();
-        Eigen::MatrixXf SS(acut, acut + A.rows());
-        SS.block(0, 0, acut, acut) = S.cwiseInverse().asDiagonal();
-        Eigen::VectorXf H = V * SS * U.transpose() * b;
-
-        // Optimize projection matrix
-        OptimizationFunctor functor(all_image_corners, all_cloud_corners);
-        Eigen::NumericalDiff<OptimizationFunctor> num_diff(functor);
-        Eigen::LevenbergMarquardt<Eigen::NumericalDiff<OptimizationFunctor>, float> lm(num_diff);
-        lm.minimizeInit(H); // TODO: How to set initial value ?
-        lm.minimize(H);
-
-        // Reshape
-        Eigen::Matrix<float, 3, 4, Eigen::RowMajor> HH =
-            Eigen::Matrix<float, 3, 4, Eigen::RowMajor>::Map(H.data());
-        return HH;
+        // TODO: optimize
+        return initial_H;
     }
 }

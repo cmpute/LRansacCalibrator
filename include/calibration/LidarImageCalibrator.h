@@ -62,7 +62,7 @@ namespace oitk
           */
         LidarImageCalibrator(pcl::search::Search<PointType>::Ptr searcher,
             float board_size = 1.1, float edge_size = 0.05, int pattern_size = 6,
-            int normal_knum = 20, int grow_knum = 30, float estimated_count_thres = 2,
+            int normal_knum = 20, int grow_knum = 30, float estimated_count_thres = 1.5,
             float plane_inlier_thres = 0.85, float board_inlier_thres = 0.75,
             float plane_dist_thres = 0.03, float board_dist_thres = 0.005,
             float smooth_thres = 6, float curvature_thres = 1.5,
@@ -74,7 +74,7 @@ namespace oitk
           * \param[in] clouds       point cloud data
           * \param[in] visualize    determine what to visualize
           */
-        Eigen::Matrix<float, 3, 4> calibrate(const std::vector<ConstImagePtr> images,
+        Eigen::Matrix<float, 3, 4>& calibrate(const std::vector<ConstImagePtr> images,
             const std::vector<ConstPointCloudPtr> clouds, VisualizeType visualize = VisualizeType::None);
 
     private:
@@ -101,11 +101,21 @@ namespace oitk
           * \param[in] visualize  passed from calibrate()
           * \param[out] corners   corner points founded
           */
-        bool findChessboardCorners(ConstPointCloudPtr cloud, Eigen::MatrixX3f& corners, VisualizeType visualize);
+        bool findPointCloudCorners(ConstPointCloudPtr cloud, Eigen::MatrixX3f& corners, VisualizeType visualize);
+
+        /** \brief Find chessboard corners in image.
+        * \param[in] image      image data
+        * \param[in] visualize  passed from calibrate()
+        * \param[out] corners   corner points founded
+        */
+        bool findImageCorners(ConstImagePtr image, Eigen::MatrixX2f& corners, VisualizeType visualize);
 
         float estimatePointCount(float board_distance);
 
-        struct OptimizationFunctor;
+        Eigen::Matrix<float, 3, 4>& solveHomographyMatrix(Eigen::MatrixX2f& image_corners, Eigen::MatrixX3f& cloud_corners);
+
+        struct InitialOptimizationFunctor;
+        struct FinetuneOptimizationFunctor;
 
     public: /******************** Properties ********************/
         inline void setGrowKNumber(const int k) { _grow_knum = k; };
