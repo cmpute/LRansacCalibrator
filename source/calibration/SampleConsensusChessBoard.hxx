@@ -46,9 +46,9 @@ namespace oitk
     class SampleConsensusChessboard : public pcl::SampleConsensusModel<PointT>
     {
     public:
-        typedef typename SampleConsensusModel<PointT>::PointCloud PointCloud;
-        typedef typename SampleConsensusModel<PointT>::PointCloudPtr PointCloudPtr;
-        typedef typename SampleConsensusModel<PointT>::PointCloudConstPtr PointCloudConstPtr;
+        typedef typename pcl::SampleConsensusModel<PointT>::PointCloud PointCloud;
+        typedef typename pcl::SampleConsensusModel<PointT>::PointCloudPtr PointCloudPtr;
+        typedef typename pcl::SampleConsensusModel<PointT>::PointCloudConstPtr PointCloudConstPtr;
         typedef boost::shared_ptr<SampleConsensusChessboard> Ptr;
 
     private:
@@ -62,8 +62,8 @@ namespace oitk
                 return false;
 
             // Get the values at the two points
-            Vector3fMapConst p0 = input_->points[samples[0]].getVector3fMap();
-            Vector3fMapConst p1 = input_->points[samples[1]].getVector3fMap();
+            const Eigen::Map<const Eigen::Vector3f> p0 = input_->points[samples[0]].getVector3fMap();
+            const Eigen::Map<const Eigen::Vector3f> p1 = input_->points[samples[1]].getVector3fMap();
             Eigen::Vector3f segment = (p1 - p0);
 
             constexpr float sq2 = 1.5; // a bit larger than sqrt(2)
@@ -108,15 +108,18 @@ namespace oitk
             else if (board_y > outer_edge)
                 return dy;
             else
-                return min(distanceToHoleEdge(board_x),
+                return std::min(distanceToHoleEdge(board_x),
                            distanceToHoleEdge(board_y));
         }
 
     protected:
-        using SampleConsensusModel<PointT>::model_name_;
-        using SampleConsensusModel<PointT>::input_;
-        using SampleConsensusModel<PointT>::indices_;
-        using SampleConsensusModel<PointT>::error_sqr_dists_;
+        using pcl::SampleConsensusModel<PointT>::model_name_;
+        using pcl::SampleConsensusModel<PointT>::input_;
+        using pcl::SampleConsensusModel<PointT>::indices_;
+        using pcl::SampleConsensusModel<PointT>::error_sqr_dists_;
+        using pcl::SampleConsensusModel<PointT>::sample_size_;
+        using pcl::SampleConsensusModel<PointT>::model_size_;
+        using pcl::SampleConsensusModel<PointT>::rnd;
 
     private:
         /** \brief Functor for the optimization function */
@@ -137,7 +140,7 @@ namespace oitk
         SampleConsensusChessboard(const PointCloudConstPtr &cloud,
             int pattern_size, float board_size, float edge_size,
             Eigen::VectorXf plane_coeffs, bool random = false)
-            : SampleConsensusModel<PointT>(cloud, random),
+            : pcl::SampleConsensusModel<PointT>(cloud, random),
             _pattern_size(pattern_size), _board_size(board_size), _edge_size(edge_size),
             _hole_size((board_size - 2 * edge_size) / (pattern_size - 1)), _rand_rate(1)
         {
@@ -155,7 +158,7 @@ namespace oitk
         SampleConsensusChessboard(const PointCloudConstPtr &cloud, const std::vector<int> &indices,
             int pattern_size, float board_size, float edge_size,
             Eigen::VectorXf plane_coeffs, bool random = false)
-            : SampleConsensusModel<PointT>(cloud, indices, random),
+            : pcl::SampleConsensusModel<PointT>(cloud, indices, random),
             _pattern_size(pattern_size), _board_size(board_size), _edge_size(edge_size),
             _hole_size((board_size - 2 * edge_size) / (pattern_size - 1)), _rand_rate(1)
         {
