@@ -66,7 +66,7 @@ namespace oitk
             float plane_inlier_thres = 0.85, float board_inlier_thres = 0.75,
             float plane_dist_thres = 0.03, float board_dist_thres = 0.005,
             float smooth_thres = 6, float curvature_thres = 1.5,
-            float res_vertical = 1.33, float res_horizental = 0.2,
+            float res_vertical = 1.33, float res_horizental = 0.16,
             float bin_thres = 60);
 
         /** \brief LidarImageCalibrator constructor.
@@ -76,19 +76,6 @@ namespace oitk
           */
         Eigen::Matrix<float, 3, 4>& calibrate(const std::vector<ConstImagePtr> images,
             const std::vector<ConstPointCloudPtr> clouds, VisualizeType visualize = VisualizeType::None);
-
-    private:
-        int _pattern_size, _normal_knum, _grow_knum;
-        float _board_size, _edge_size, _estimated_count_thres,
-            _plane_inlier_thres, _board_inlier_thres,
-            _plane_dist_thres, _board_dist_thres,
-            _smooth_thres, _curvature_thres,
-            _res_vertical, _res_horizental, // stores in radian
-            _bin_thres;
-
-        float _pcount_coeff; // cache for estimate count of points on board
-
-        pcl::search::Search<PointType>::Ptr _searcher;
 
         /** \brief Sort corners in certain order.
           * \param[in] corners      corner points in the board plane (can be approximately projected)
@@ -113,6 +100,19 @@ namespace oitk
         float estimatePointCount(float board_distance);
 
         Eigen::Matrix<float, 3, 4>& solveHomographyMatrix(Eigen::MatrixX2f& image_corners, Eigen::MatrixX3f& cloud_corners);
+
+    private:
+        int _pattern_size, _normal_knum, _grow_knum;
+        float _board_size, _edge_size, _estimated_count_thres,
+            _plane_inlier_thres, _board_inlier_thres,
+            _plane_dist_thres, _board_dist_thres,
+            _smooth_thres, _curvature_thres,
+            _res_vertical, _res_horizental, // stores in radian
+            _bin_thres;
+
+        float _pcount_coeff; // cache for estimate count of points on board
+
+        pcl::search::Search<PointType>::Ptr _searcher;
 
         struct InitialOptimizationFunctor;
         struct FinetuneOptimizationFunctor;

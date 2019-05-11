@@ -104,7 +104,7 @@ namespace oitk
                 Eigen::Vector4f centroid;
                 compute3DCentroid(*board, centroid);
                 pcentroid.getArray4fMap() = centroid;
-                cluster_viewer->addText3D("text" + to_string(cluster_no), pcentroid, 0.2);
+                cluster_viewer->addText3D("tcluster" + to_string(cluster_no), pcentroid, 0.2);
                 cluster_no++;
             }
             cluster_viewer->addCoordinateSystem();
@@ -117,9 +117,6 @@ namespace oitk
         #pragma omp parallel for
         for (int cluster_idx = 0; cluster_idx < clusters.size(); cluster_idx++)
         {
-#ifndef NDEBUG
-            if (cluster_idx < 50) continue;
-#endif
             // Filter clusters with much more or much less points
             auto cluster_vec = clusters[cluster_idx].indices;
             auto cluster_size = cluster_vec.size();
@@ -133,9 +130,15 @@ namespace oitk
             float distance = cluster_cloud.rowwise().norm().mean();
             float estimated_count = estimatePointCount(distance);
             if (cluster_size > estimated_count * _estimated_count_thres)
+            {
+                PCL_DEBUG ("Region %d skipped: Too many points.\n", cluster_idx);
                 continue;
+            }
             if (cluster_size < estimated_count / _estimated_count_thres)
+            {
+                PCL_DEBUG ("Region %d skipped: Too few points.\n", cluster_idx);
                 continue;
+            }
 
             // Filter clusters with defficient planarity
             vector<int> plane_inliers;
@@ -146,7 +149,11 @@ namespace oitk
             plane_sac.setDistanceThreshold(_plane_dist_thres);
 
             if (!plane_sac.computeModel())
-                cerr << "Failed to find the board plane in cluster!" << endl; // TODO: add assert, debug, error macros
+            {
+                // TODO: add assert, debug, error macros
+                PCL_ERROR ("Region %d skipped: Failed to find the board plane in cluster!\n", cluster_idx);
+                continue;
+            }
             plane_sac.getInliers(plane_inliers);
             plane_sac.getModelCoefficients(plane_params);
             plane_sac.setProbability(1 - 1e-8);
@@ -183,7 +190,10 @@ namespace oitk
             }
 
             if (plane_inliers.size() < _plane_inlier_thres * cluster_size)
+            {
+                PCL_DEBUG ("Region %d skipped: Not enough plane inliers.\n", cluster_idx);
                 continue;
+            }
 
             // Filter clusters with defficient board coherency
             vector<int> board_inliers;
@@ -196,7 +206,10 @@ namespace oitk
             board_sac->setProbability(1 - 1e-16); // Increase trying times
 
             if (!board_sac->computeModel())
-                cerr << "Failed to find the board in cluster!" << endl;
+            {
+                PCL_ERROR ("Region %d skipped: Failed to find the board in cluster!\n", cluster_idx);
+                continue;
+            }
             board_sac->getInliers(board_inliers);
 
             if ((visualize & VisualizeType::PointCloudClusterBoard) == VisualizeType::PointCloudClusterBoard)
@@ -252,16 +265,16 @@ namespace oitk
             }
 
             if (board_inliers.size() < _board_inlier_thres * cluster_size)
+            {
+                PCL_DEBUG ("Region %d skipped: Not enough board inliers.\n", cluster_idx);
                 continue;
+            }
 
             // TODO: Find the best model using metrics
             best_model = board_sac;
         }
         if (best_model == nullptr)
-        {
-            cerr << "Failed to find the board in point cloud!" << endl;
             return false;
-        }
         // TODO: Refine model
         // best_model->refineModel();
 
@@ -269,11 +282,11 @@ namespace oitk
         vector<float> offsets;
         offsets.reserve(_pattern_size);
         float _hole_size = (_board_size - 2 * _edge_size) / (_pattern_size - 1);
-#ifdef USE_INNER_GRIDS
+        #ifdef USE_INNER_GRIDS
         for (float i = 0.5; i < _pattern_size / 2 - 1; i += 1)
-#else
+        #else
         for (float i = 0.5; i < _pattern_size / 2; i += 1)
-#endif
+        #endif
         {
             offsets.push_back(i * _hole_size);
             offsets.push_back(-i * _hole_size);
@@ -298,11 +311,11 @@ namespace oitk
     {
         Mat binImage;
         vector<Point2f> image_corners;
-#ifdef USE_INNER_GRIDS
+        #ifdef USE_INNER_GRIDS
         Size pattern(_pattern_size - 2, _pattern_size - 2);
-#else
+        #else
         Size pattern(_pattern_size, _pattern_size);
-#endif
+        #endif
         threshold(*image, binImage, _bin_thres, 255, THRESH_BINARY);
         if (!cv::findChessboardCorners(binImage, pattern, image_corners, CALIB_CB_FAST_CHECK))
         {
@@ -349,11 +362,11 @@ namespace oitk
             bottom_bound = corners(leftist_idx, 1);
             indices[sorted_idx++] = leftist_idx;
             left_filter.erase(leftist_idx);
-#ifdef USE_INNER_GRIDS
+        #ifdef USE_INNER_GRIDS
             if (++edge_counter == _pattern_size - 2) edge_counter = 0;
-#else
+        #else
             if (++edge_counter == _pattern_size) edge_counter = 0;
-#endif
+        #endif
         }
     }
 
@@ -506,11 +519,11 @@ namespace oitk
         if (images.size() != clouds.size())
             cerr << "The counts of images and point clouds don't match" << endl;
         int frame_count = images.size();
-#ifdef USE_INNER_GRIDS
+        #ifdef USE_INNER_GRIDS
         int corners_per_frame = (_pattern_size - 2) * (_pattern_size - 2);
-#else
+        #else
         int corners_per_frame = _pattern_size * _pattern_size;
-#endif
+        #endif
 
         Eigen::MatrixX2f all_image_corners(frame_count * corners_per_frame, 2);
         Eigen::MatrixX3f all_cloud_corners(frame_count * corners_per_frame, 3);

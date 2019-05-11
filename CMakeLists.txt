@@ -12,6 +12,13 @@ find_package(PCL COMPONENTS common io sample_consensus search features segmentat
 # Use SYSTEM to enable <xxx> include style
 include_directories(SYSTEM ${EIGEN_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 
+find_package(OpenMP)
+if(OpenMP_FOUND)
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+endif()
+
 # Add submodules
 include_directories(${OITK_SOURCE_DIR}/include)
 include_directories(${OITK_SOURCE_DIR}/source) # for *.hxx
